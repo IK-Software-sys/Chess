@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- Viewport settings prevent zooming when dragging pieces on mobile -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+    <title>Strong Mobile Chess Bot</title>
+    
+    <!-- Chessboard.js CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #2b2b2b;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h2 { margin-top: 0; text-align: center; }
+        
+        /* Mobile responsive board container */
+        #myBoard {
+            width: 100%;
+            max-width: 500px; /* Limits size on tablets/desktop */
+            margin-bottom: 20px;
+        }
+        
+        .status-box {
+            width: 100%;
+            max-width: 500px;
+            background: #3c3c3c;
+            padding: 15px;
+            border-radius: 8px;
+            box-sizing: border-box;
+            text-align: center;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            text-align: center;
+            font-size: 16px;
+            border-radius: 6px;
+            margin-top: 15px;
+            cursor: pointer;
+            width: 100%;
+            max-width: 500px;
+        }
+        button:active { background-color: #45a049; }
+    </style>
+</head>
+<body>
+
+    <h2>Play the Grandmaster</h2>
+    
+    <!-- The Chess Board -->
+    <div id="myBoard"></div>
+    
+    <!-- Game Status Display -->
+    <div class="status-box" id="status">Your turn to move (White)</div>
+    <button onclick="resetGame()">Restart Game</button>
+
+    <!-- Dependencies: jQuery, Chess.js (logic), Chessboard.js (UI) -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+    <script>
+        var board = null;
+        var game = new Chess();
+        var $status = $('#status');
+        var thinkDelay = 1500; // Default human-like thinking delay (1.5 seconds)
+
+        // Initialize Stockfish via Web Worker using a Blob to bypass basic CORS limits
+        var stockfishCode = "importScripts('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js');";
+        var blob = new Blob([stockfishCode], {type: 'application/javascript'});
+        var engine = new Worker(URL.createObjectURL(blob));
+
+        // Configure engine
+        engine.postMessage('uci');
+        engine.postMessage('setoption name Skill Level value 18'); // High level: extremely strong, but not mathematically perfect.
+
+        // Handle messages from Stockfish
+        engine.onmessage = function(event) {
+            var line = event.data;
+
+            // If the engine finds a forced mate or a massive advantage (opponent blunder), drop the delay to snap-move
+            if (line.includes('score mate') || line.includes('score cp 600') || line.includes('score cp 700') || line.includes('score cp 800')) {
+                thinkDelay = 200; // Act very quickly (200ms)
+            }
+
+            // Execute the best move found by the engine
+            if (line.startsWith('bestmove')) {
+                var match = line.match(/^bestmove ([a-h][1-8])([a-h][1-8])([qrob])?/);
+                if (match) {
+                    var move = {
+                        from: match[1],
+                        to: match[2],
+                        promotion: match[3] || 'q'
+                    };
+
+                    // Apply the human-like or punishing delay before snapping the piece
+                    setTimeout(function() {
+                        game.move(move);
+                        board.position(game.fen());
+                        updateStatus();
+                        thinkDelay = 1500; // Reset back to default human delay for the next move
+                    }, thinkDelay);
+                }
+            }
+        };
+
+        function makeEngineMove() {
+            if (game.game_over()) return;
+            $status.html('Bot is thinking...');
+            engine.postMessage('position fen ' + game.fen());
+            engine.postMessage('go depth 14'); // Depth 14 is fast but calculates deep enough to crush casuals
+        }
+
+        function onDragStart(source, piece, position, orientation) {
+            // Do not pick up pieces if the game is over or if it's the bot's turn (black pieces)
+            if (game.game_over()) return false;
+            if (piece.search(/^b/) !== -1) return false;
+        }
+
+        function onDrop(source, target) {
+            // See if the move is legal
+            var move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q' // NOTE: Always promotes to a queen for simplicity on mobile
+            });
+
+            // Illegal move
+            if (move === null) return 'snapback';
+
+            updateStatus();
+            
+            // Trigger the bot's response
+            window.setTimeout(makeEngineMove, 250);
+        }
+
+        // Update the board position after the piece snap
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+
+        function updateStatus() {
+            var statusHTML = '';
+            var moveColor = (game.turn() === 'w') ? 'White' : 'Black';
+
+            if (game.in_checkmate()) {
+                statusHTML = 'Game over, ' + moveColor + ' is in checkmate.';
+            } else if (game.in_draw()) {
+                statusHTML = 'Game over, drawn position';
+            } else {
+                statusHTML = moveColor + ' to move';
+                if (game.in_check()) {
+                    statusHTML += ', ' + moveColor + ' is in check!';
+                }
+            }
+            $status.html(statusHTML);
+        }
+
+        function resetGame() {
+            game.reset();
+            board.start();
+            updateStatus();
+        }
+
+        // Configuration for the visual chessboard
+        var config = {
+            draggable: true,
+            position: 'start',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd,
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+        };
+        
+        board = Chessboard('myBoard', config);
+        updateStatus();
+        
+        // Fix for sizing issues on mobile rotation/loading
+        $(window).resize(board.resize);
+    </script>
+</body>
+</html>
